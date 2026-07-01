@@ -1,347 +1,352 @@
 import io
-import re
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Tuple
 
+import msoffcrypto
 import pandas as pd
 import streamlit as st
 
-try:
-    import msoffcrypto
-except Exception:
-    msoffcrypto = None
-
 st.set_page_config(page_title="Sydney BD Growth Intelligence", layout="wide")
 
-# -----------------------------
-# Helpers
-# -----------------------------
-
-def norm(s: str) -> str:
-    return re.sub(r"\s+", "", str(s).lower())
-
-
-def find_col(df: pd.DataFrame, candidates: List[str], must_contain_any: Optional[List[str]] = None) -> Optional[str]:
-    cols = list(df.columns)
-    ncols = {c: norm(c) for c in cols}
-    for cand in candidates:
-        nc = norm(cand)
-        for c, n in ncols.items():
-            if n == nc or nc in n or n in nc:
-                return c
-    if must_contain_any:
-        terms = [norm(x) for x in must_contain_any]
-        for c, n in ncols.items():
-            if any(t in n for t in terms):
-                return c
-    return None
-
-
-def find_metric_col(df: pd.DataFrame, include_terms: List[str], exclude_terms: Optional[List[str]] = None) -> Optional[str]:
-    exclude_terms = exclude_terms or []
-    best = None
-    best_score = -1
-    for c in df.columns:
-        n = norm(c)
-        if any(norm(x) in n for x in exclude_terms):
-            continue
-        score = sum(1 for t in include_terms if norm(t) in n)
-        if score > best_score and score > 0:
-            best = c
-            best_score = score
-    return best
-
-
-def to_num(s: pd.Series) -> pd.Series:
-    return pd.to_numeric(
-        s.astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.replace("%", "", regex=False),
-        errors="coerce",
-    ).fillna(0)
+NAME_COL_CANDIDATES = [
+    "bd姓名", "BD姓名", "bd name", "BD Name", "BD_NAME", "owner name", "Owner Name",
+    "负责人姓名", "业务员姓名", "BD", "bd", "负责人", "owner", "Owner",
+]
+ID_COL_CANDIDATES = [
+    "bd工号", "BD工号", "bd id", "BD ID", "BD_ID", "owner id", "Owner ID", "工号", "员工号",
+]
+MERCHANT_COL_CANDIDATES = [
+    "店铺名称", "门店名称", "商家名称", "merchant name", "Merchant Name", "shop name", "Shop Name", "name", "Name"
+]
+AREA_COL_CANDIDATES = ["商圈", "区域", "area", "Area", "suburb", "Suburb", "城市区域"]
+GMV_COL_CANDIDATES = ["GMV", "gmv", "交易额", "销售额", "实付GMV", "支付GMV", "订单金额"]
+ORDER_COL_CANDIDATES = ["订单", "订单数", "orders", "Orders", "有效订单", "完成订单数"]
+EXPOSURE_COL_CANDIDATES = ["曝光", "曝光人数", "曝光次数", "impression", "Impressions", "曝光量"]
+VISIT_COL_CANDIDATES = ["进店", "进店人数", "访问", "visits", "Visits", "店铺访问"]
+CART_COL_CANDIDATES = ["加购", "加购人数", "cart", "Cart", "Add to cart", "加购数"]
+MATERIAL_COL_CANDIDATES = ["物料", "是否有物料", "material", "Material"]
+VISIT_RECORD_COL_CANDIDATES = ["拜访", "拜访记录", "是否拜访", "visit record", "Visit Record"]
+PROMO_COL_KEYWORDS = ["折扣", "满减", "优惠", "券", "promotion", "promo", "discount", "rebate", "活动"]
 
 
 def decrypt_excel(uploaded_file, password: str) -> bytes:
-    raw = uploaded_file.read()
-    if not password:
-        return raw
-    if msoffcrypto is None:
-        raise RuntimeError("msoffcrypto-tool is not installed. Please check requirements.txt")
-    office_file = msoffcrypto.OfficeFile(io.BytesIO(raw))
-    office_file.load_key(password=password)
+    data = uploaded_file.read()
+    bio = io.BytesIO(data)
     out = io.BytesIO()
-    office_file.decrypt(out)
-    return out.getvalue()
+    try:
+        office_file = msoffcrypto.OfficeFile(bio)
+        office_file.load_key(password=password)
+        office_file.decrypt(out)
+        return out.getvalue()
+    except Exception:
+        # If file is not encrypted, try returning original bytes.
+        return data
 
 
-def read_excel(uploaded_file, password: str) -> pd.DataFrame:
-    data = decrypt_excel(uploaded_file, password)
-    xls = pd.ExcelFile(io.BytesIO(data), engine="openpyxl")
-    sheet = xls.sheet_names[0]
-    df = pd.read_excel(io.BytesIO(data), sheet_name=sheet, engine="openpyxl")
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
+def read_excel_bytes(excel_bytes: bytes) -> pd.DataFrame:
+    xl = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
+    # Prefer first sheet with rows/columns
+    best = None
+    for sheet in xl.sheet_names:
+        df = pd.read_excel(xl, sheet_name=sheet)
+        if best is None or df.shape[0] * df.shape[1] > best.shape[0] * best.shape[1]:
+            best = df
+    return best if best is not None else pd.DataFrame()
 
 
-def detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+def find_col(df: pd.DataFrame, candidates: List[str], contains: bool = False) -> Optional[str]:
+    cols = list(df.columns)
+    lower_map = {str(c).strip().lower(): c for c in cols}
+    for cand in candidates:
+        key = cand.strip().lower()
+        if key in lower_map:
+            return lower_map[key]
+    if contains:
+        for c in cols:
+            lc = str(c).strip().lower()
+            for cand in candidates:
+                if cand.strip().lower() in lc:
+                    return c
+    return None
+
+
+def numeric_series(df: pd.DataFrame, col: Optional[str]) -> pd.Series:
+    if not col or col not in df.columns:
+        return pd.Series([0] * len(df), index=df.index, dtype="float64")
+    s = df[col]
+    if s.dtype == object:
+        s = s.astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.replace("%", "", regex=False)
+    return pd.to_numeric(s, errors="coerce").fillna(0)
+
+
+def detect_columns(df: pd.DataFrame) -> dict:
+    bd_name_col = find_col(df, NAME_COL_CANDIDATES, contains=True)
+    bd_id_col = find_col(df, ID_COL_CANDIDATES, contains=True)
+    # If no explicit name column, use ID column as fallback.
+    owner_col = bd_name_col or bd_id_col
+    merchant_col = find_col(df, MERCHANT_COL_CANDIDATES, contains=True)
+    area_col = find_col(df, AREA_COL_CANDIDATES, contains=True)
+    gmv_col = find_col(df, GMV_COL_CANDIDATES, contains=True)
+    order_col = find_col(df, ORDER_COL_CANDIDATES, contains=True)
+    exposure_col = find_col(df, EXPOSURE_COL_CANDIDATES, contains=True)
+    visit_col = find_col(df, VISIT_COL_CANDIDATES, contains=True)
+    cart_col = find_col(df, CART_COL_CANDIDATES, contains=True)
+    material_col = find_col(df, MATERIAL_COL_CANDIDATES, contains=True)
+    visit_record_col = find_col(df, VISIT_RECORD_COL_CANDIDATES, contains=True)
+    promo_cols = [c for c in df.columns if any(k.lower() in str(c).lower() for k in PROMO_COL_KEYWORDS)]
     return {
-        "bd": find_col(df, ["bd工号", "bd姓名", "BD", "BD Name", "owner", "负责人", "业务员", "account manager"]),
-        "merchant": find_col(df, ["店铺名称", "门店名称", "商家名称", "merchant name", "store name", "restaurant name", "name"]),
-        "area": find_col(df, ["商圈", "区域", "城市区域", "area", "district", "suburb", "zone"]),
-        "category": find_col(df, ["品类", "菜系", "category", "cuisine", "business type"]),
-        "gmv": find_metric_col(df, ["gmv"], ["rate", "率", "%"]),
-        "orders": find_metric_col(df, ["订单"], ["率", "rate", "%"]) or find_metric_col(df, ["orders"], ["rate", "%"]),
-        "exposure": find_metric_col(df, ["曝光"], ["率", "rate", "%"]) or find_metric_col(df, ["impression", "exposure"], ["rate", "%"]),
-        "visit": find_metric_col(df, ["进店"], ["率", "rate", "%"]) or find_metric_col(df, ["visit"], ["rate", "%"]),
-        "cart": find_metric_col(df, ["加购"], ["率", "rate", "%"]) or find_metric_col(df, ["cart"], ["rate", "%"]),
-        "material": find_col(df, ["物料", "material", "poster", "posm"]),
-        "visit_record": find_col(df, ["拜访", "visit record", "last visit", "到访"]),
-        "discount": find_col(df, ["折扣", "discount", "优惠", "coupon", "满减", "运费券", "活动"]),
+        "bd_name_col": bd_name_col,
+        "bd_id_col": bd_id_col,
+        "owner_col": owner_col,
+        "merchant_col": merchant_col,
+        "area_col": area_col,
+        "gmv_col": gmv_col,
+        "order_col": order_col,
+        "exposure_col": exposure_col,
+        "visit_col": visit_col,
+        "cart_col": cart_col,
+        "material_col": material_col,
+        "visit_record_col": visit_record_col,
+        "promo_cols": promo_cols,
     }
 
 
-def add_metrics(df: pd.DataFrame, c: Dict[str, Optional[str]]) -> pd.DataFrame:
-    d = df.copy()
-    for key in ["gmv", "orders", "exposure", "visit", "cart"]:
-        if c.get(key):
-            d[f"__{key}"] = to_num(d[c[key]])
-        else:
-            d[f"__{key}"] = 0
-    d["__exp_to_order"] = d["__orders"] / d["__exposure"].replace(0, pd.NA)
-    d["__exp_to_visit"] = d["__visit"] / d["__exposure"].replace(0, pd.NA)
-    d["__visit_to_cart"] = d["__cart"] / d["__visit"].replace(0, pd.NA)
-    d["__cart_to_order"] = d["__orders"] / d["__cart"].replace(0, pd.NA)
-    for col in ["__exp_to_order", "__exp_to_visit", "__visit_to_cart", "__cart_to_order"]:
-        d[col] = d[col].fillna(0).clip(lower=0, upper=10)
-    return d
-
-
-def coverage_rate(s: pd.Series) -> float:
-    if s is None or len(s) == 0:
-        return 0.0
-    text = s.astype(str).str.strip().str.lower()
-    missing = text.isin(["", "0", "nan", "none", "否", "无", "no", "false", "n"])
-    return float((~missing).mean())
-
-
-def bd_ranking(d: pd.DataFrame, c: Dict[str, Optional[str]]) -> pd.DataFrame:
-    bd_col = c["bd"]
-    if not bd_col:
-        return pd.DataFrame()
-    rows = []
-    for bd, g in d.groupby(bd_col, dropna=False):
-        if str(bd).strip() in ["", "nan", "None"]:
-            continue
-        exposure = g["__exposure"].sum()
-        orders = g["__orders"].sum()
-        row = {
-            "BD": str(bd),
-            "Merchants": len(g),
-            "GMV": g["__gmv"].sum(),
-            "Orders": orders,
-            "Exposure": exposure,
-            "GMV / Store": g["__gmv"].sum() / max(len(g), 1),
-            "Exposure → Order": orders / exposure if exposure else 0,
-            "Avg Store Conversion": g["__exp_to_order"].mean(),
-        }
-        if c.get("material"):
-            row["Material Coverage"] = coverage_rate(g[c["material"]])
-        if c.get("visit_record"):
-            row["Visit Coverage"] = coverage_rate(g[c["visit_record"]])
-        if c.get("discount"):
-            row["Promotion Coverage"] = coverage_rate(g[c["discount"]])
-        rows.append(row)
-    r = pd.DataFrame(rows)
-    if len(r):
-        r = r.sort_values("GMV", ascending=False).reset_index(drop=True)
-        r.insert(0, "Rank", range(1, len(r) + 1))
-    return r
-
-
-def opportunity_list(d: pd.DataFrame, c: Dict[str, Optional[str]], selected_bd: Optional[str], top_n=30) -> pd.DataFrame:
-    g = d.copy()
-    if selected_bd and c.get("bd"):
-        g = g[g[c["bd"]].astype(str) == str(selected_bd)]
-    if len(g) == 0:
-        return pd.DataFrame()
-    exp_q = g["__exposure"].quantile(0.65) if g["__exposure"].sum() else 0
-    conv_med = d["__exp_to_order"].median() if len(d) else 0
-    g["Opportunity Score"] = 0.0
-    g.loc[g["__exposure"] >= exp_q, "Opportunity Score"] += 35
-    g.loc[g["__exp_to_order"] < conv_med, "Opportunity Score"] += 35
-    g["Opportunity Score"] += (g["__gmv"].rank(pct=True) * 20).fillna(0)
-    if c.get("material"):
-        mat_missing = g[c["material"]].astype(str).str.strip().str.lower().isin(["", "0", "nan", "none", "否", "无", "no", "false", "n"])
-        g.loc[mat_missing, "Opportunity Score"] += 10
-    reason = []
-    action = []
-    for _, row in g.iterrows():
-        rs = []
-        ac = []
-        if row["__exposure"] >= exp_q and row["__exp_to_order"] < conv_med:
-            rs.append("曝光高但下单转化低")
-            ac.append("优先检查首图、菜单排序、爆品套餐和满减/运费券")
-        if row["__visit"] > 0 and row["__cart"] / max(row["__visit"], 1) < d["__visit_to_cart"].median():
-            rs.append("进店后加购偏弱")
-            ac.append("优化菜单前10项、图片、价格带和套餐命名")
-        if row["__cart"] > 0 and row["__orders"] / max(row["__cart"], 1) < d["__cart_to_order"].median():
-            rs.append("加购后下单偏弱")
-            ac.append("补优惠券、满减门槛、配送费补贴，降低最后一步流失")
-        reason.append("；".join(rs) or "综合潜力较高")
-        action.append("；".join(ac) or "安排拜访，复制同品类高转化店的活动与菜单结构")
-    g["Reason"] = reason
-    g["Recommended Action"] = action
-    cols = []
-    rename = {}
-    for key, label in [("merchant", "Store Name"), ("bd", "BD"), ("area", "Area"), ("category", "Category")]:
-        if c.get(key):
-            cols.append(c[key]); rename[c[key]] = label
-    cols += ["__gmv", "__orders", "__exposure", "__exp_to_order", "Opportunity Score", "Reason", "Recommended Action"]
-    out = g.sort_values("Opportunity Score", ascending=False)[cols].head(top_n).rename(columns=rename)
-    out = out.rename(columns={"__gmv": "GMV", "__orders": "Orders", "__exposure": "Exposure", "__exp_to_order": "Exposure → Order"})
-    return out
-
-
-def best_practice(d: pd.DataFrame, c: Dict[str, Optional[str]], selected_bd: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    top = d.sort_values("__exp_to_order", ascending=False).head(100)
-    mine = d[d[c["bd"]].astype(str) == str(selected_bd)] if selected_bd and c.get("bd") else pd.DataFrame()
-    rows = []
-    for label, data in [("Top 100 conversion stores", top), ("My stores", mine)]:
-        if len(data) == 0: continue
-        row = {"Group": label, "Stores": len(data), "Avg GMV": data["__gmv"].mean(), "Avg Orders": data["__orders"].mean(), "Avg Conversion": data["__exp_to_order"].mean()}
-        if c.get("material"): row["Material Coverage"] = coverage_rate(data[c["material"]])
-        if c.get("visit_record"): row["Visit Coverage"] = coverage_rate(data[c["visit_record"]])
-        if c.get("discount"): row["Promotion Coverage"] = coverage_rate(data[c["discount"]])
-        rows.append(row)
-    top_cols = []
-    rename = {}
-    for key, label in [("merchant", "Store Name"), ("bd", "BD"), ("area", "Area"), ("category", "Category")]:
-        if c.get(key): top_cols.append(c[key]); rename[c[key]] = label
-    top_cols += ["__gmv", "__orders", "__exposure", "__exp_to_order"]
-    top_stores = top[top_cols].rename(columns=rename).rename(columns={"__gmv":"GMV", "__orders":"Orders", "__exposure":"Exposure", "__exp_to_order":"Exposure → Order"})
-    return pd.DataFrame(rows), top_stores
-
-
-def format_df(df: pd.DataFrame) -> pd.DataFrame:
+def add_metrics(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
     out = df.copy()
-    for col in out.columns:
-        if col in ["GMV", "GMV / Store", "Avg GMV"]:
-            out[col] = out[col].map(lambda x: f"${x:,.0f}" if pd.notna(x) else "")
-        elif col in ["Exposure → Order", "Avg Store Conversion", "Avg Conversion", "Material Coverage", "Visit Coverage", "Promotion Coverage"]:
-            out[col] = out[col].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
-        elif col in ["Opportunity Score"]:
-            out[col] = out[col].map(lambda x: f"{x:.1f}" if pd.notna(x) else "")
+    out["_bd_display"] = out[cols["owner_col"]].astype(str).str.strip() if cols["owner_col"] else "Unknown"
+    out["_merchant"] = out[cols["merchant_col"]].astype(str).str.strip() if cols["merchant_col"] else out.index.astype(str)
+    out["_area"] = out[cols["area_col"]].astype(str).str.strip() if cols["area_col"] else "Unknown"
+    out["_gmv"] = numeric_series(out, cols["gmv_col"])
+    out["_orders"] = numeric_series(out, cols["order_col"])
+    out["_exposure"] = numeric_series(out, cols["exposure_col"])
+    out["_visits"] = numeric_series(out, cols["visit_col"])
+    out["_cart"] = numeric_series(out, cols["cart_col"])
+    out["_exposure_to_order"] = out["_orders"] / out["_exposure"].replace(0, pd.NA)
+    out["_visit_rate"] = out["_visits"] / out["_exposure"].replace(0, pd.NA)
+    out["_cart_rate"] = out["_cart"] / out["_visits"].replace(0, pd.NA)
+    out["_cart_to_order"] = out["_orders"] / out["_cart"].replace(0, pd.NA)
+
+    promo_cols = cols.get("promo_cols", [])
+    if promo_cols:
+        promo_numeric = pd.concat([numeric_series(out, c) for c in promo_cols], axis=1)
+        out["_promo_count"] = (promo_numeric > 0).sum(axis=1)
+        out["_has_promo"] = out["_promo_count"] > 0
+    else:
+        out["_promo_count"] = 0
+        out["_has_promo"] = False
+
+    def truthy(s):
+        if s is None or s not in out.columns:
+            return pd.Series([False] * len(out), index=out.index)
+        txt = out[s].astype(str).str.lower().str.strip()
+        return txt.isin(["1", "yes", "y", "true", "有", "是", "已", "done"])
+
+    out["_has_material"] = truthy(cols.get("material_col"))
+    out["_has_visit_record"] = truthy(cols.get("visit_record_col"))
     return out
 
 
-def make_excel(ranking, opp, pattern, topstores) -> bytes:
+def bd_ranking(df: pd.DataFrame) -> pd.DataFrame:
+    g = df.groupby("_bd_display", dropna=False).agg(
+        Merchants=("_merchant", "count"),
+        GMV=("_gmv", "sum"),
+        Orders=("_orders", "sum"),
+        Exposure=("_exposure", "sum"),
+        Visits=("_visits", "sum"),
+        Cart=("_cart", "sum"),
+        Promo_Rate=("_has_promo", "mean"),
+        Material_Rate=("_has_material", "mean"),
+        Visit_Record_Rate=("_has_visit_record", "mean"),
+    ).reset_index().rename(columns={"_bd_display": "BD Name"})
+    g["GMV / Store"] = g["GMV"] / g["Merchants"].replace(0, pd.NA)
+    g["Exposure → Order"] = g["Orders"] / g["Exposure"].replace(0, pd.NA)
+    g["Visit Rate"] = g["Visits"] / g["Exposure"].replace(0, pd.NA)
+    g["Cart Rate"] = g["Cart"] / g["Visits"].replace(0, pd.NA)
+    g = g.sort_values("GMV", ascending=False).reset_index(drop=True)
+    g.insert(0, "Rank", range(1, len(g) + 1))
+    return g
+
+
+def build_action_plan(df: pd.DataFrame, selected_bd: str, top_n: int = 30) -> pd.DataFrame:
+    me = df[df["_bd_display"] == selected_bd].copy()
+    if me.empty:
+        return pd.DataFrame()
+    # opportunity score: high exposure, low conversion, missing promo/material/visit record
+    conv = me["_exposure_to_order"].fillna(0)
+    median_conv = df["_exposure_to_order"].replace([pd.NA], 0).fillna(0).median()
+    me["Opportunity Score"] = (
+        me["_exposure"].rank(pct=True) * 40
+        + (conv < median_conv).astype(int) * 25
+        + (~me["_has_promo"]).astype(int) * 15
+        + (~me["_has_material"]).astype(int) * 10
+        + (~me["_has_visit_record"]).astype(int) * 10
+    )
+
+    def reason(row):
+        r = []
+        if row["_exposure"] > me["_exposure"].median(): r.append("high exposure")
+        if pd.notna(row["_exposure_to_order"]) and row["_exposure_to_order"] < median_conv: r.append("low conversion")
+        if not row["_has_promo"]: r.append("weak/no promo")
+        if not row["_has_material"]: r.append("no material")
+        if not row["_has_visit_record"]: r.append("no visit record")
+        return ", ".join(r) or "stable merchant"
+
+    def action(row):
+        actions = []
+        if not row["_has_promo"]: actions.append("add coupon / bundle / discount campaign")
+        if pd.notna(row["_exposure_to_order"]) and row["_exposure_to_order"] < median_conv: actions.append("review hero image, menu order and pricing")
+        if not row["_has_material"]: actions.append("arrange in-store material")
+        if not row["_has_visit_record"]: actions.append("schedule merchant visit this week")
+        return "; ".join(actions) or "maintain and monitor"
+
+    plan = me.sort_values("Opportunity Score", ascending=False).head(top_n).copy()
+    plan["BD Name"] = plan["_bd_display"]
+    plan["Merchant Name"] = plan["_merchant"]
+    plan["Area"] = plan["_area"]
+    plan["GMV"] = plan["_gmv"]
+    plan["Orders"] = plan["_orders"]
+    plan["Exposure"] = plan["_exposure"]
+    plan["Exposure → Order"] = plan["_exposure_to_order"]
+    plan["Reason"] = plan.apply(reason, axis=1)
+    plan["Recommended Action"] = plan.apply(action, axis=1)
+    return plan[["BD Name", "Merchant Name", "Area", "GMV", "Orders", "Exposure", "Exposure → Order", "Opportunity Score", "Reason", "Recommended Action"]]
+
+
+def format_money(x):
+    try:
+        return f"${x:,.0f}"
+    except Exception:
+        return "$0"
+
+
+def format_pct(x):
+    try:
+        return f"{x:.2%}"
+    except Exception:
+        return "-"
+
+
+st.title("Sydney Growth Intelligence — V2.1")
+st.caption("BD names first · Compare with top BD · Learn from best merchants · Merchant-name action plan")
+
+with st.sidebar:
+    st.header("Upload")
+    uploaded = st.file_uploader("Encrypted Excel", type=["xlsx", "xlsm", "xls"])
+    password = st.text_input("Password", type="password")
+    st.caption("V2.1 will prefer BD name columns over BD ID/work number columns.")
+
+if not uploaded:
+    st.info("Upload your monthly Excel report to start.")
+    st.stop()
+
+try:
+    excel_bytes = decrypt_excel(uploaded, password)
+    raw = read_excel_bytes(excel_bytes)
+    cols = detect_columns(raw)
+    df = add_metrics(raw, cols)
+except Exception as e:
+    st.error(f"Failed to read the file: {e}")
+    st.stop()
+
+st.success(f"Loaded {len(df):,} rows and {len(raw.columns):,} columns.")
+
+if not cols["owner_col"]:
+    st.error("Could not find BD name/ID column. Please check if the file has bd姓名, BD Name, bd工号, or Owner columns.")
+    st.stop()
+
+bd_options = sorted([x for x in df["_bd_display"].dropna().astype(str).unique() if x and x.lower() != "nan"])
+def_idx = 0
+for i, name in enumerate(bd_options):
+    if "yuan" in name.lower() and "dong" in name.lower():
+        def_idx = i
+        break
+
+selected_bd = st.sidebar.selectbox("BD Name", bd_options, index=def_idx if bd_options else 0)
+
+ranking = bd_ranking(df)
+my_row = ranking[ranking["BD Name"] == selected_bd]
+top_row = ranking.iloc[[0]] if not ranking.empty else pd.DataFrame()
+
+st.subheader("Overview")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Sydney GMV", format_money(df["_gmv"].sum()))
+c2.metric("Sydney Orders", f"{df['_orders'].sum():,.0f}")
+c3.metric("Merchants", f"{len(df):,}")
+c4.metric("BD Count", f"{len(bd_options):,}")
+
+if not my_row.empty:
+    r = my_row.iloc[0]
+    st.subheader(f"My Performance — {selected_bd}")
+    a, b, c, d, e = st.columns(5)
+    a.metric("Rank", f"#{int(r['Rank'])}")
+    b.metric("My GMV", format_money(r["GMV"]))
+    c.metric("My Merchants", f"{int(r['Merchants']):,}")
+    d.metric("GMV / Store", format_money(r["GMV / Store"]))
+    e.metric("Exposure → Order", format_pct(r["Exposure → Order"]))
+
+st.subheader("BD Ranking — Name Display")
+show_cols = ["Rank", "BD Name", "Merchants", "GMV", "Orders", "GMV / Store", "Exposure → Order", "Promo_Rate", "Material_Rate", "Visit_Record_Rate"]
+st.dataframe(
+    ranking[show_cols].style.format({
+        "GMV": "${:,.0f}", "GMV / Store": "${:,.0f}", "Exposure → Order": "{:.2%}",
+        "Promo_Rate": "{:.1%}", "Material_Rate": "{:.1%}", "Visit_Record_Rate": "{:.1%}",
+    }),
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.subheader("Compare Me vs Top BD")
+if not my_row.empty and not top_row.empty:
+    m, t = my_row.iloc[0], top_row.iloc[0]
+    compare = pd.DataFrame({
+        "KPI": ["GMV", "Merchants", "GMV / Store", "Exposure → Order", "Promo Rate", "Material Rate", "Visit Record Rate"],
+        selected_bd: [m["GMV"], m["Merchants"], m["GMV / Store"], m["Exposure → Order"], m["Promo_Rate"], m["Material_Rate"], m["Visit_Record_Rate"]],
+        f"Top BD: {t['BD Name']}": [t["GMV"], t["Merchants"], t["GMV / Store"], t["Exposure → Order"], t["Promo_Rate"], t["Material_Rate"], t["Visit_Record_Rate"]],
+    })
+    st.dataframe(compare, use_container_width=True, hide_index=True)
+    gaps = []
+    if m["Promo_Rate"] < t["Promo_Rate"]: gaps.append("promotion coverage")
+    if m["Material_Rate"] < t["Material_Rate"]: gaps.append("in-store material coverage")
+    if m["Visit_Record_Rate"] < t["Visit_Record_Rate"]: gaps.append("merchant visit coverage")
+    if m["Exposure → Order"] < t["Exposure → Order"]: gaps.append("exposure-to-order conversion")
+    st.info("Priority learning areas: " + (", ".join(gaps) if gaps else "you are close to the top BD on the tracked metrics."))
+
+st.subheader("Learn From Best")
+if not top_row.empty:
+    top_bd = top_row.iloc[0]["BD Name"]
+    top_merchants = df[df["_bd_display"] == top_bd].sort_values("_gmv", ascending=False).head(20)
+    best = top_merchants.assign(
+        **{
+            "BD Name": top_merchants["_bd_display"],
+            "Merchant Name": top_merchants["_merchant"],
+            "Area": top_merchants["_area"],
+            "GMV": top_merchants["_gmv"],
+            "Orders": top_merchants["_orders"],
+            "Exposure → Order": top_merchants["_exposure_to_order"],
+            "Promo Count": top_merchants["_promo_count"],
+            "Has Material": top_merchants["_has_material"],
+        }
+    )[["BD Name", "Merchant Name", "Area", "GMV", "Orders", "Exposure → Order", "Promo Count", "Has Material"]]
+    st.write(f"Top merchants managed by **{top_bd}**:")
+    st.dataframe(best.style.format({"GMV": "${:,.0f}", "Exposure → Order": "{:.2%}"}), use_container_width=True, hide_index=True)
+
+st.subheader(f"Action Plan — {selected_bd}")
+plan = build_action_plan(df, selected_bd, top_n=30)
+if plan.empty:
+    st.warning("No merchant found for this BD. Please choose another BD name from the dropdown.")
+else:
+    st.dataframe(plan.style.format({"GMV": "${:,.0f}", "Exposure → Order": "{:.2%}", "Opportunity Score": "{:.1f}"}), use_container_width=True, hide_index=True)
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         ranking.to_excel(writer, index=False, sheet_name="BD Ranking")
-        opp.to_excel(writer, index=False, sheet_name="Action Plan")
-        pattern.to_excel(writer, index=False, sheet_name="Best Practice")
-        topstores.to_excel(writer, index=False, sheet_name="Top Stores")
-    return output.getvalue()
+        plan.to_excel(writer, index=False, sheet_name="Action Plan")
+        df[["_bd_display", "_merchant", "_area", "_gmv", "_orders", "_exposure", "_exposure_to_order", "_has_promo", "_has_material", "_has_visit_record"]].to_excel(writer, index=False, sheet_name="Merchant Metrics")
+    st.download_button(
+        "Download V2.1 Excel Report",
+        data=output.getvalue(),
+        file_name="sydney_bd_dashboard_v21_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
-# -----------------------------
-# UI
-# -----------------------------
-
-st.title("Sydney BD Growth Intelligence")
-st.caption("V2: BD Ranking · Compare Me · Learn From Best · Action Plan")
-
-with st.sidebar:
-    uploaded = st.file_uploader("Upload encrypted Excel", type=["xlsx", "xlsm", "xls"])
-    password = st.text_input("Password", type="password")
-    analyse = st.button("Analyse", type="primary")
-
-if not uploaded:
-    st.info("Upload your monthly Excel file, enter password, then click Analyse.")
-    st.stop()
-
-if analyse or uploaded:
-    try:
-        df = read_excel(uploaded, password)
-        cols = detect_columns(df)
-        d = add_metrics(df, cols)
-    except Exception as e:
-        st.error(f"Could not read this file: {e}")
-        st.stop()
-
-    st.success(f"Loaded {len(df):,} rows and {len(df.columns):,} columns")
-    with st.expander("Detected columns"):
-        st.json(cols)
-
-    bd_col = cols.get("bd")
-    bd_options = []
-    if bd_col:
-        bd_options = sorted([x for x in d[bd_col].dropna().astype(str).unique().tolist() if x.strip() and x.strip().lower() != "nan"])
-    selected_bd = st.sidebar.selectbox("Choose BD / Owner", bd_options, index=0 if bd_options else None) if bd_options else None
-
-    total_gmv = d["__gmv"].sum()
-    total_orders = d["__orders"].sum()
-    total_exp = d["__exposure"].sum()
-    my = d[d[bd_col].astype(str) == str(selected_bd)] if selected_bd and bd_col else pd.DataFrame()
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Sydney GMV", f"${total_gmv:,.0f}")
-    c2.metric("Sydney Orders", f"{total_orders:,.0f}")
-    c3.metric("Sydney Conversion", f"{(total_orders/total_exp if total_exp else 0):.2%}")
-    c4.metric("Merchants", f"{len(d):,}")
-
-    if selected_bd and len(my):
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("My Merchants", f"{len(my):,}")
-        m2.metric("My GMV", f"${my['__gmv'].sum():,.0f}")
-        m3.metric("My Orders", f"{my['__orders'].sum():,.0f}")
-        m4.metric("My Conversion", f"{(my['__orders'].sum()/my['__exposure'].sum() if my['__exposure'].sum() else 0):.2%}")
-
-    ranking = bd_ranking(d, cols)
-    opp = opportunity_list(d, cols, selected_bd, 30)
-    pattern, topstores = best_practice(d, cols, selected_bd)
-
-    tab1, tab2, tab3, tab4 = st.tabs(["🏆 BD Ranking", "🔍 Compare Me", "📍 Learn From Best", "🎯 Action Plan"])
-
-    with tab1:
-        st.subheader("Sydney BD Ranking")
-        st.dataframe(format_df(ranking), use_container_width=True, hide_index=True)
-
-    with tab2:
-        st.subheader("Compare Me vs Top BD")
-        if selected_bd and len(ranking):
-            top_bd = ranking.iloc[0]
-            me_row = ranking[ranking["BD"] == str(selected_bd)]
-            if len(me_row):
-                me_row = me_row.iloc[0]
-                compare_rows = []
-                for metric in ["GMV", "Merchants", "GMV / Store", "Exposure → Order", "Material Coverage", "Visit Coverage", "Promotion Coverage"]:
-                    if metric in ranking.columns:
-                        compare_rows.append({"Metric": metric, "Me": me_row.get(metric, 0), "Top BD": top_bd.get(metric, 0), "Gap": me_row.get(metric, 0) - top_bd.get(metric, 0)})
-                comp = pd.DataFrame(compare_rows)
-                st.dataframe(format_df(comp), use_container_width=True, hide_index=True)
-                st.markdown("### Quick diagnosis")
-                weak = []
-                for _, r in comp.iterrows():
-                    if isinstance(r["Me"], (int, float)) and isinstance(r["Top BD"], (int, float)) and r["Top BD"] and r["Me"] < r["Top BD"] * 0.85:
-                        weak.append(r["Metric"])
-                if weak:
-                    st.write("Your biggest gaps are: **" + "**, **".join(weak[:3]) + "**. Focus on these before chasing more merchants.")
-                else:
-                    st.write("You are close to top BD on the main measurable metrics. Next step is store-level optimization.")
-            else:
-                st.warning("Selected BD was not found in ranking.")
-        else:
-            st.warning("No BD column detected.")
-
-    with tab3:
-        st.subheader("Best Practice Pattern")
-        st.dataframe(format_df(pattern), use_container_width=True, hide_index=True)
-        st.subheader("Top conversion stores to learn from")
-        st.dataframe(format_df(topstores.head(50)), use_container_width=True, hide_index=True)
-
-    with tab4:
-        st.subheader("Priority Action Plan")
-        st.dataframe(format_df(opp), use_container_width=True, hide_index=True)
-        if len(opp):
-            st.markdown("### This week focus")
-            st.write("Start with the top 10 stores. The best batch move is: fix menu first, add/adjust promotion second, then visit stores with high exposure but low conversion.")
-
-    report = make_excel(ranking, opp, pattern, topstores)
-    st.download_button("Download full Excel report", report, file_name="sydney_bd_growth_report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+with st.expander("Detected columns"):
+    st.json(cols)

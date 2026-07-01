@@ -1,13 +1,13 @@
-# Sydney BD Dashboard V2
+# Sydney BD Dashboard V2.1
 
-功能：
-- 上传加密 Excel
-- 输入密码解密
-- 自动识别 BD 列、店铺名称列、GMV、订单、曝光、进店、加购等字段
-- BD Ranking
-- Compare Me vs Top BD
-- Learn From Best
-- Action Plan with 店铺名称
-- 下载 Excel 报告
+V2.1 updates:
+- BD selector now prioritises BD name columns over BD ID/work number columns.
+- BD Ranking displays BD names.
+- Compare Me vs Top BD uses names.
+- Learn From Best lists top merchants under the selected top BD.
+- Action Plan includes merchant name and BD name.
 
-部署：上传 app.py、requirements.txt、README.md 到 GitHub 覆盖旧文件，然后 Streamlit 自动重启。
+Deploy on Streamlit Cloud:
+1. Upload/replace app.py, requirements.txt, README.md in GitHub.
+2. Commit changes.
+3. Reboot the Streamlit app.
