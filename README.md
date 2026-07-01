@@ -1,13 +1,13 @@
-# Sydney BD AI Copilot
+# Sydney BD AI Copilot V1.1
 
-A Streamlit app for analysing password-protected Excel merchant reports.
+Updated features:
+- BD selector dropdown
+- Correctly detects `bd姓名` and `商户名称`
+- Adds store name to action plan
+- Adds area analysis, BD ranking, conversion metrics, coverage rates
+- Exports full analysis Excel
 
-## Deploy on Streamlit Cloud
-1. Upload these project files to GitHub.
-2. Go to Streamlit Community Cloud.
-3. Create a new app.
-4. Select this repository.
-5. Main file path: `app.py`.
-6. Deploy.
-
-Do not upload company raw Excel files into GitHub.
+Deploy settings:
+- Repository: Dyl26an/Sydney-BD-Dashboard
+- Branch: main
+- Main file path: app.py
