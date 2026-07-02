@@ -199,7 +199,19 @@ def bd_summary(df: pd.DataFrame) -> pd.DataFrame:
     g["Visit → Cart"] = np.where(g["Visit"] > 0, g["Cart"] / g["Visit"], 0)
     g["Cart → Order"] = np.where(g["Cart"] > 0, g["Orders"] / g["Cart"], 0)
     g["Exposure → Order"] = np.where(g["Exposure"] > 0, g["Orders"] / g["Exposure"], 0)
-    g["High GMV Stores"] = df.assign(_high=df["_gmv"] >= df["_gmv"].quantile(0.75)).groupby("_bd_display")["_high"].sum().values
+    # Count high-GMV stores per BD. Use merge rather than assigning raw .values,
+    # because some rows can have blank/NaN BD names and groupby(dropna=False) order/length
+    # may not match the summary table exactly on Streamlit Cloud.
+    high_cutoff = df["_gmv"].quantile(0.75) if len(df) else 0
+    high_counts = (
+        df.assign(_high=df["_gmv"] >= high_cutoff)
+        .groupby("_bd_display", dropna=False)["_high"]
+        .sum()
+        .reset_index()
+        .rename(columns={"_bd_display": "BD Name", "_high": "High GMV Stores"})
+    )
+    g = g.merge(high_counts, on="BD Name", how="left")
+    g["High GMV Stores"] = g["High GMV Stores"].fillna(0).astype(int)
     g = g.sort_values("GMV", ascending=False).reset_index(drop=True)
     g.insert(0, "Rank", np.arange(1, len(g) + 1))
     return g
