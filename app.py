@@ -277,17 +277,21 @@ if len(bd_rank) > 0:
         f"Top BD: {top_bd['BD Name']}": [top_bd["GMV"], top_bd["Orders"], top_bd["Merchants"], top_bd["GMV / Store"], top_bd["High GMV Stores"], top_bd["Exposure → Visit"], top_bd["Visit → Cart"], top_bd["Cart → Order"], top_bd["Exposure → Order"], top_bd["Promo Rate"], top_bd["Visit Record Rate"]],
     })
     compare["Gap"] = compare[f"Top BD: {top_bd['BD Name']}"] - compare[selected_bd]
-    # Format manually
-    formatted = compare.copy()
+    # Format manually as text to avoid pandas dtype errors on Streamlit Cloud
+    formatted = compare.astype(object).copy()
     money_metrics = ["GMV", "GMV / Store"]
     pct_metrics = ["Exposure → Visit", "Visit → Cart", "Cart → Order", "Exposure → Order", "Promo Rate", "Visit Record Rate"]
-    for idx, row in formatted.iterrows():
-        if row["Metric"] in money_metrics:
-            for c in formatted.columns[1:]: formatted.at[idx, c] = fmt_money(compare.at[idx, c])
-        elif row["Metric"] in pct_metrics:
-            for c in formatted.columns[1:]: formatted.at[idx, c] = fmt_pct(compare.at[idx, c])
-        else:
-            for c in formatted.columns[1:]: formatted.at[idx, c] = f"{compare.at[idx, c]:,.0f}"
+    value_cols = [c for c in formatted.columns if c != "Metric"]
+    for idx, row in compare.iterrows():
+        metric = row["Metric"]
+        for c in value_cols:
+            val = compare.at[idx, c]
+            if metric in money_metrics:
+                formatted.at[idx, c] = fmt_money(float(val))
+            elif metric in pct_metrics:
+                formatted.at[idx, c] = fmt_pct(float(val))
+            else:
+                formatted.at[idx, c] = f"{float(val):,.0f}"
     st.dataframe(formatted, use_container_width=True, hide_index=True)
 
 st.header("Merchant Intelligence")

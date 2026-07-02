@@ -1,13 +1,11 @@
-# Sydney Growth Intelligence V4
+# Sydney Growth Intelligence V4.1
 
-V4 rebuilds the metric logic using a clear Metric Dictionary.
+Fixes V4 Compare Me formatting crash and keeps weighted metric definitions.
 
-Key changes:
-- Funnel rates are weighted, calculated from raw counts: sum(numerator) / sum(denominator)
-- No simple average of conversion-rate columns for BD ranking
-- Orders, exposure, visit, cart columns are detected with safer priority rules
-- Merchant name is displayed in action plans and merchant intelligence
-- Metric explanations are shown in the app
+Core metric rules:
+- Exposure → Visit = Σ Visit / Σ Exposure
+- Visit → Cart = Σ Cart / Σ Visit
+- Cart → Order = Σ Orders / Σ Cart
+- Exposure → Order = Σ Orders / Σ Exposure
 
-Deploy on Streamlit with:
-- Main file: app.py
+Do not use simple average of conversion-rate columns for BD or Sydney level summaries.
