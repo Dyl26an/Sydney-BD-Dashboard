@@ -1,5 +1,5 @@
-streamlit>=1.36.0
-pandas>=2.0.0
-numpy>=1.24.0
-openpyxl>=3.1.0
-msoffcrypto-tool>=5.4.0
+streamlit>=1.35.0
+pandas>=2.2.0
+openpyxl>=3.1.2
+msoffcrypto-tool>=5.4.2
+xlsxwriter>=3.2.0
