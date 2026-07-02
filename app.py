@@ -10,7 +10,7 @@ try:
 except Exception:
     msoffcrypto = None
 
-st.set_page_config(page_title="Sydney Growth Intelligence V4", layout="wide")
+st.set_page_config(page_title="Sydney Growth Intelligence V4.2", layout="wide")
 
 # ----------------------------
 # Helpers
@@ -103,6 +103,17 @@ def safe_div(a: float, b: float) -> float:
     return float(a) / float(b) if b and pd.notna(b) and float(b) != 0 else 0.0
 
 
+def weighted_rate(g: pd.DataFrame, rate_col: str, weight_col: str, fallback_num: str = None, fallback_den: str = None) -> float:
+    if rate_col in g.columns and weight_col in g.columns:
+        r = pd.to_numeric(g[rate_col], errors="coerce").fillna(0)
+        w = pd.to_numeric(g[weight_col], errors="coerce").fillna(0)
+        if w.sum() > 0 and r.notna().sum() > 0:
+            return float((r * w).sum() / w.sum())
+    if fallback_num and fallback_den:
+        return safe_div(g[fallback_num].sum(), g[fallback_den].sum())
+    return 0.0
+
+
 def prepare(df: pd.DataFrame, col: Dict[str, Optional[str]]) -> pd.DataFrame:
     out = df.copy()
     out["_bd_display"] = "Unknown BD"
@@ -122,6 +133,17 @@ def prepare(df: pd.DataFrame, col: Dict[str, Optional[str]]) -> pd.DataFrame:
     for key in ["gmv", "orders", "exposure", "visit", "cart"]:
         source = col.get(key)
         out[f"_{key}"] = to_num(out[source]).fillna(0) if source else 0
+
+    # Official conversion-rate fields from the source file.
+    # Important: in this report exposure/visit/cart are average user counts,
+    # while orders are monthly order counts. Therefore Orders / Cart is not a valid funnel rate.
+    # We use source conversion rates and aggregate them by weighted average.
+    for key in ["src_e2o_rate", "src_e2v_rate", "src_v2c_rate", "src_c2o_rate"]:
+        source = col.get(key)
+        vals = to_num(out[source]).fillna(0) if source else 0
+        if hasattr(vals, "max") and vals.max() > 1.5:
+            vals = vals / 100
+        out[f"_{key}"] = vals
     return out
 
 
@@ -142,10 +164,11 @@ def group_metrics(g: pd.DataFrame) -> pd.Series:
         "Exposure": exposure,
         "Visit": visit,
         "Cart": cart,
-        "Exposure → Visit": safe_div(visit, exposure),
-        "Visit → Cart": safe_div(cart, visit),
-        "Cart → Order": safe_div(orders, cart),
-        "Exposure → Order": safe_div(orders, exposure),
+        # Weighted official funnel rates. Do not calculate monthly Orders / average Cart.
+        "Exposure → Visit": weighted_rate(g, "_src_e2v_rate", "_exposure", "_visit", "_exposure"),
+        "Visit → Cart": weighted_rate(g, "_src_v2c_rate", "_visit", "_cart", "_visit"),
+        "Cart → Order": weighted_rate(g, "_src_c2o_rate", "_cart"),
+        "Exposure → Order": weighted_rate(g, "_src_e2o_rate", "_exposure"),
     })
 
 
@@ -184,10 +207,10 @@ METRIC_DICT = pd.DataFrame([
     ["GMV", "Σ GMV", "汇总", "最终经营结果，但不能单独判断BD能力。"],
     ["Orders", "Σ 订单数", "汇总", "成交量。必须使用订单数原始列，不用配送类型或转化率列。"],
     ["GMV / Store", "Σ GMV ÷ 店铺数", "加权/汇总后计算", "衡量店铺质量和经营深度。"],
-    ["Exposure → Visit", "Σ 进店人数 ÷ Σ 曝光人数", "加权平均", "衡量曝光是否能吸引用户点进店铺。"],
-    ["Visit → Cart", "Σ 加购人数 ÷ Σ 进店人数", "加权平均", "衡量菜单、图片、价格是否让用户产生购买意愿。"],
-    ["Cart → Order", "Σ 订单数 ÷ Σ 加购人数", "加权平均", "衡量临门一脚，受价格、配送费、优惠券影响大。"],
-    ["Exposure → Order", "Σ 订单数 ÷ Σ 曝光人数", "加权平均", "最终转化效率。不是每家店转化率的算术平均。"],
+    ["Exposure → Visit", "Σ(曝光进店转化率 × 平均曝光人数) ÷ Σ平均曝光人数", "加权平均", "使用源文件官方转化率；不做简单平均。"],
+    ["Visit → Cart", "Σ(进店加购转化率 × 平均进店人数) ÷ Σ平均进店人数", "加权平均", "使用源文件官方转化率；不做简单平均。"],
+    ["Cart → Order", "Σ(加购下单转化率 × 平均加购人数) ÷ Σ平均加购人数", "加权平均", "注意：不能用月订单数 ÷ 平均加购人数，周期口径不同。"],
+    ["Exposure → Order", "Σ(曝光下单转化率 × 平均曝光人数) ÷ Σ平均曝光人数", "加权平均", "最终转化效率。不是每家店转化率的算术平均。"],
     ["Promo Rate", "有活动店铺数 ÷ 总店铺数", "店铺覆盖率", "衡量BD推动活动配置能力。"],
     ["Material Rate", "有物料店铺数 ÷ 总店铺数", "店铺覆盖率", "衡量物料覆盖，不是GMV指标。"],
     ["Visit Record Rate", "有拜访记录店铺数 ÷ 总店铺数", "店铺覆盖率", "衡量拜访覆盖度。"],
@@ -197,8 +220,8 @@ METRIC_DICT = pd.DataFrame([
 # ----------------------------
 # UI
 # ----------------------------
-st.title("Sydney Growth Intelligence V4")
-st.caption("Metric dictionary first: weighted funnel metrics, merchant names, and explainable BD comparison.")
+st.title("Sydney Growth Intelligence V4.2")
+st.caption("Metric dictionary first: official weighted funnel metrics, merchant names, and explainable BD comparison.")
 
 with st.sidebar:
     st.header("Upload")
@@ -298,10 +321,11 @@ st.header("Merchant Intelligence")
 merchant_cols = ["_merchant_name", "_merchant_id", "_bd_display", "_area", "_category", "_gmv", "_orders", "_exposure", "_visit", "_cart"]
 merch = df[merchant_cols].copy()
 merch.columns = ["Merchant Name", "Merchant ID", "BD Name", "Area", "Category", "GMV", "Orders", "Exposure", "Visit", "Cart"]
-merch["Exposure → Visit"] = merch.apply(lambda r: safe_div(r["Visit"], r["Exposure"]), axis=1)
-merch["Visit → Cart"] = merch.apply(lambda r: safe_div(r["Cart"], r["Visit"]), axis=1)
-merch["Cart → Order"] = merch.apply(lambda r: safe_div(r["Orders"], r["Cart"]), axis=1)
-merch["Exposure → Order"] = merch.apply(lambda r: safe_div(r["Orders"], r["Exposure"]), axis=1)
+# Merchant-level conversion rates use the source official rate fields where available.
+merch["Exposure → Visit"] = df["_src_e2v_rate"].values if "_src_e2v_rate" in df.columns else merch.apply(lambda r: safe_div(r["Visit"], r["Exposure"]), axis=1)
+merch["Visit → Cart"] = df["_src_v2c_rate"].values if "_src_v2c_rate" in df.columns else merch.apply(lambda r: safe_div(r["Cart"], r["Visit"]), axis=1)
+merch["Cart → Order"] = df["_src_c2o_rate"].values if "_src_c2o_rate" in df.columns else 0
+merch["Exposure → Order"] = df["_src_e2o_rate"].values if "_src_e2o_rate" in df.columns else 0
 my_merch = merch[merch["BD Name"] == selected_bd].sort_values("GMV", ascending=False)
 st.dataframe(style_metrics(my_merch.head(top_n)), use_container_width=True, hide_index=True)
 
