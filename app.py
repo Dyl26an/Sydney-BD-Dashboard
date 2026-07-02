@@ -114,26 +114,32 @@ def read_excel(uploaded_file, password: str) -> pd.DataFrame:
 
 
 def detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+    """Detect columns with priority for this merchant performance Excel.
+    Important: count columns must be picked before categorical fields such as 必选_订单配送类型.
+    Funnel rates should use the existing rate columns where available, because raw exposure/visit/cart/order
+    columns can be mixed monthly totals vs daily averages.
+    """
     return {
         "bd_name": pick_col(df, ["bd姓名", "bd name", "owner name", "owner", "负责人", "业务员", "姓名"]),
         "bd_id": pick_col(df, ["bd工号", "bd id", "bdid", "工号"]),
         "merchant_name": pick_col(df, ["商户名称", "店铺名称", "门店名称", "merchant name", "store name", "restaurant name", "name"]),
         "merchant_id": pick_col(df, ["店铺id", "商户id", "merchant id", "store id", "poi id", "门店id"]),
         "area": pick_col(df, ["商圈", "区域", "area", "district", "suburb"]),
-        "category": pick_col(df, ["品类", "主营品类", "category", "cuisine", "菜系"]),
+        "category": pick_col(df, ["店铺二级分类", "品类", "主营品类", "category", "cuisine", "菜系"]),
         "gmv": pick_numeric_col(df, ["gmv", "交易额", "成交额", "销售额", "总gmv"]),
-        "orders": pick_numeric_col(df, ["订单", "订单数", "有效订单", "必选_订单配送类型", "orders", "order"], must_not=["转化率", "率"]),
-        "exposure": pick_numeric_col(df, ["曝光", "曝光人数", "曝光次数", "曝光uv", "impression", "exposure"], must_not=["转化率", "率"]),
-        "visit": pick_numeric_col(df, ["进店", "访问", "进店人数", "visit", "store visit"], must_not=["转化率", "率"]),
-        "cart": pick_numeric_col(df, ["加购", "购物车", "cart", "add to cart"], must_not=["转化率", "率"]),
+        # This file uses 订单数_排除mm的均单 as the reliable order-count field.
+        "orders": pick_numeric_col(df, ["订单数_排除mm的均单", "订单数", "有效订单", "店铺下单人数", "下单人数_排除mm的均单", "orders", "order"], must_not=["配送类型", "必选", "转化率", "率"]),
+        "exposure": pick_numeric_col(df, ["平均曝光人数", "曝光人数", "曝光次数", "曝光uv", "曝光", "impression", "exposure"], must_not=["转化率", "率", "高曝光"]),
+        "visit": pick_numeric_col(df, ["平均进店人数", "进店人数", "访问人数", "进店", "访问", "visit", "store visit"], must_not=["转化率", "率"]),
+        "cart": pick_numeric_col(df, ["平均加购人数", "加购人数", "购物车人数", "加购", "购物车", "cart", "add to cart"], must_not=["转化率", "率"]),
+        "exposure_visit_rate": pick_col(df, ["曝光进店转化率", "曝光到进店率", "曝光->进店", "exposure visit"]),
         "exposure_order_rate": pick_col(df, ["曝光下单转化率", "曝光到下单率", "曝光->下单", "exposure order", "曝光下单"]),
         "visit_cart_rate": pick_col(df, ["进店加购转化率", "进店到加购", "visit cart"]),
-        "cart_order_rate": pick_col(df, ["加购到下单率", "加购下单", "cart order"]),
+        "cart_order_rate": pick_col(df, ["加购下单转化率", "加购到下单率", "加购下单", "cart order"]),
         "material": pick_col(df, ["是否有物料", "物料", "material"]),
         "visit_record": pick_col(df, ["拜访记录", "是否拜访", "visit record", "拜访"]),
         "promo": pick_col(df, ["折扣来数", "营销活动", "活动", "优惠券", "promo", "campaign", "discount"]),
     }
-
 
 def enrich(df: pd.DataFrame, cols: Dict[str, Optional[str]]) -> pd.DataFrame:
     out = df.copy()
@@ -157,14 +163,27 @@ def enrich(df: pd.DataFrame, cols: Dict[str, Optional[str]]) -> pd.DataFrame:
     out["_visit"] = num_col("visit")
     out["_cart"] = num_col("cart")
 
+    # Prefer rate columns from the source file. They are more reliable than recomputing with mixed
+    # monthly totals and daily-average people counts.
     if cols.get("exposure_order_rate"):
         out["_exp_order_rate"] = to_rate(out[cols["exposure_order_rate"]])
     else:
         out["_exp_order_rate"] = np.where(out["_exposure"] > 0, out["_orders"] / out["_exposure"], 0)
 
-    out["_visit_rate"] = np.where(out["_exposure"] > 0, out["_visit"] / out["_exposure"], 0)
-    out["_cart_rate"] = np.where(out["_visit"] > 0, out["_cart"] / out["_visit"], 0)
-    out["_cart_order_rate"] = np.where(out["_cart"] > 0, out["_orders"] / out["_cart"], 0)
+    if cols.get("exposure_visit_rate"):
+        out["_visit_rate"] = to_rate(out[cols["exposure_visit_rate"]])
+    else:
+        out["_visit_rate"] = np.where(out["_exposure"] > 0, out["_visit"] / out["_exposure"], 0)
+
+    if cols.get("visit_cart_rate"):
+        out["_cart_rate"] = to_rate(out[cols["visit_cart_rate"]])
+    else:
+        out["_cart_rate"] = np.where(out["_visit"] > 0, out["_cart"] / out["_visit"], 0)
+
+    if cols.get("cart_order_rate"):
+        out["_cart_order_rate"] = to_rate(out[cols["cart_order_rate"]])
+    else:
+        out["_cart_order_rate"] = np.where(out["_cart"] > 0, out["_orders"] / out["_cart"], 0)
 
     def boolish(key):
         c = cols.get(key)
@@ -447,6 +466,18 @@ with tabs[0]:
 
 with tabs[1]:
     st.subheader("BD Ranking — Name Display")
+with st.expander("字段解释 / What these columns mean", expanded=False):
+    st.markdown("""
+    - **Orders**：订单数。本版本优先读取 `订单数_排除mm的均单`，不再误抓 `必选_订单配送类型`。
+    - **Exposure → Visit**：曝光进店转化率。衡量用户看到店铺后是否愿意点进店。
+    - **Visit → Cart**：进店加购转化率。衡量菜单、价格、图片、套餐是否有吸引力。
+    - **Cart → Order**：加购下单转化率。衡量用户是否在最后一步流失，常和配送费、优惠、起送价有关。
+    - **Exposure → Order**：曝光下单转化率，最综合的转化结果指标。
+    - **Promo_Rate**：有活动/折扣配置的店铺比例。
+    - **Material_Rate**：有物料记录的店铺比例；如果源数据全空，这里会显示 0%。
+    - **Visit_Record_Rate**：有拜访记录的店铺比例。
+    """)
+
     rank_view = bd_rank[["Rank", "BD Name", "Merchants", "GMV", "Orders", "GMV / Store", "High GMV Stores", "Exposure → Visit", "Visit → Cart", "Cart → Order", "Exposure → Order", "Promo_Rate", "Material_Rate", "Visit_Record_Rate"]].copy()
     display_df(rank_view, money_cols=["GMV", "GMV / Store"], pct_cols=["Exposure → Visit", "Visit → Cart", "Cart → Order", "Exposure → Order", "Promo_Rate", "Material_Rate", "Visit_Record_Rate"])
 
