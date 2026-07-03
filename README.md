@@ -1,14 +1,17 @@
-# Sydney Growth Intelligence V4.2
+# Sydney Growth Intelligence V5
 
-Fixes funnel metric logic.
+Upload encrypted monthly Excel reports, select reporting month and BD, then analyse:
 
-Important correction:
-- The report has monthly orders but average exposure/visit/cart user counts.
-- Therefore `Orders / Cart` and `Orders / Exposure` are not valid.
-- V4.2 uses official source conversion-rate fields and aggregates them using weighted averages.
+- Executive dashboard
+- BD ranking with weighted funnel metrics
+- Learn From Best merchant board
+- Merchant Intelligence with merchant names
+- Opportunity Finder
+- Category / Area Intelligence
+- Metric Dictionary
+- Downloadable action plan
 
-Weighted methods:
-- Exposure → Visit = Σ(曝光进店转化率 × 平均曝光人数) / Σ平均曝光人数
-- Visit → Cart = Σ(进店加购转化率 × 平均进店人数) / Σ平均进店人数
-- Cart → Order = Σ(加购下单转化率 × 平均加购人数) / Σ平均加购人数
-- Exposure → Order = Σ(曝光下单转化率 × 平均曝光人数) / Σ平均曝光人数
+## Streamlit deploy
+
+Main file path: `app.py`
+
