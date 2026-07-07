@@ -1,17 +1,12 @@
-# Sydney Growth Intelligence V5
+# Sydney Growth Intelligence V6
 
-Upload encrypted monthly Excel reports, select reporting month and BD, then analyse:
+V6 adds Merchant AI Coach:
+- Search one merchant by name
+- Find Top 5 learning merchants in the same/similar category
+- Learning Score
+- Gap Analysis
+- Best Practice checklist
+- Action Plan
+- Visit Brief
 
-- Executive dashboard
-- BD ranking with weighted funnel metrics
-- Learn From Best merchant board
-- Merchant Intelligence with merchant names
-- Opportunity Finder
-- Category / Area Intelligence
-- Metric Dictionary
-- Downloadable action plan
-
-## Streamlit deploy
-
-Main file path: `app.py`
-
+Deploy on Streamlit Cloud with `app.py` as the main file.
